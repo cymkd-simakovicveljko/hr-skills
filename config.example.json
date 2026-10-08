@@ -1,0 +1,13 @@
+{
+  "listen": "127.0.0.1:8080",
+  "store": "./data",
+  "policy_file": "./policy.json",
+  "auth": {
+    "issuer": "https://auth.example.com",
+    "resource_url": "https://hr-skills.example.com/mcp",
+    "workspace_domain": "recombo.ai"
+  },
+  "catalogs": [
+    { "name": "shared", "path": "./catalogs/shared" }
+  ]
+}
