@@ -3,9 +3,11 @@
   "store": "./data",
   "policy_file": "./policy.json",
   "auth": {
-    "issuer": "https://auth.example.com",
     "resource_url": "https://hr-skills.example.com/mcp",
-    "workspace_domain": "recombo.ai"
+    "workspace_domain": "recombo.ai",
+    "google_client_id": "your-client-id.apps.googleusercontent.com",
+    "google_client_secret_file": "./secrets/google-client-secret",
+    "token_file": "./private/tokens.json"
   },
   "catalogs": [
     { "name": "shared", "path": "./catalogs/shared" }

@@ -13,9 +13,11 @@ import (
 )
 
 type authConfig struct {
-	Issuer          string `json:"issuer"`
-	ResourceURL     string `json:"resource_url"`
-	WorkspaceDomain string `json:"workspace_domain"`
+	ResourceURL            string `json:"resource_url"`
+	WorkspaceDomain        string `json:"workspace_domain"`
+	GoogleClientID         string `json:"google_client_id"`
+	GoogleClientSecretFile string `json:"google_client_secret_file"`
+	TokenFile              string `json:"token_file"`
 }
 
 type catalogConfig struct {
@@ -31,7 +33,7 @@ type config struct {
 	Catalogs   []catalogConfig `json:"catalogs"`
 }
 
-// Memberships are administered here, not inferred from email or Google ID tokens.
+// Memberships are administered here, keyed by verified Google subject, not email.
 type policy struct {
 	Subjects map[string][]string `json:"subjects"`
 	Catalogs map[string][]string `json:"catalogs"`
@@ -92,6 +94,16 @@ func loadConfig(path string) (config, error) {
 		return filepath.Join(base, p)
 	}
 	c.Store, c.PolicyFile = resolve(c.Store), resolve(c.PolicyFile)
+	if c.Auth.TokenFile == "" {
+		return c, fmt.Errorf("auth.token_file is required")
+	}
+	c.Auth.TokenFile = resolve(c.Auth.TokenFile)
+	if c.Auth.GoogleClientSecretFile != "" {
+		c.Auth.GoogleClientSecretFile = resolve(c.Auth.GoogleClientSecretFile)
+	}
+	if within(c.Store, c.Auth.TokenFile) || c.Auth.TokenFile == c.PolicyFile || c.Auth.TokenFile == c.Auth.GoogleClientSecretFile {
+		return c, fmt.Errorf("token_file must be separate from the catalog store, policy, and Google secret")
+	}
 	seen := map[string]bool{}
 	for i := range c.Catalogs {
 		v := &c.Catalogs[i]
@@ -103,12 +115,12 @@ func loadConfig(path string) (config, error) {
 		if within(v.Path, c.Store) || within(c.Store, v.Path) {
 			return c, fmt.Errorf("catalog source and store must not overlap")
 		}
+		if within(v.Path, c.Auth.TokenFile) || (c.Auth.GoogleClientSecretFile != "" && within(v.Path, c.Auth.GoogleClientSecretFile)) {
+			return c, fmt.Errorf("authentication files must not be inside a catalog source")
+		}
 	}
 	if len(c.Catalogs) == 0 {
 		return c, fmt.Errorf("at least one catalog is required")
-	}
-	if err := validateEndpoint(c.Auth.Issuer); err != nil {
-		return c, fmt.Errorf("issuer: %w", err)
 	}
 	if err := validateEndpoint(c.Auth.ResourceURL); err != nil {
 		return c, fmt.Errorf("resource_url: %w", err)

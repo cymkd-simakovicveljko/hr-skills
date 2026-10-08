@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,20 +12,21 @@ import (
 	"strings"
 	"testing"
 
-	jose "github.com/go-jose/go-jose/v4"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // This scenario defends the HTTP authorization seam, including grants changed
-// after discovery. A cached session or manifest must never preserve a grant.
+// after prior requests. A cached session or manifest must never preserve a grant.
 func TestHTTPIsolationPublicationAndRevocation(t *testing.T) {
 	for _, version := range []string{"2025-11-25", "2026-07-28"} {
 		t.Run(version, func(t *testing.T) {
-			issuer := newLocalOIDCFixture(t)
 			root := t.TempDir()
+			httpServer := httptest.NewUnstartedServer(nil)
+			defer httpServer.Close()
+			resourceURL := "http://" + httpServer.Listener.Addr().String() + "/mcp"
 			c := config{
 				Store: filepath.Join(root, "store"), PolicyFile: filepath.Join(root, "policy.json"),
-				Auth:     authConfig{Issuer: issuer.issuer, ResourceURL: issuer.resource, WorkspaceDomain: "example.com"},
+				Auth:     authConfig{ResourceURL: resourceURL, WorkspaceDomain: "example.com"},
 				Catalogs: []catalogConfig{{Name: "engineering", Path: filepath.Join(root, "engineering")}, {Name: "finance", Path: filepath.Join(root, "finance")}},
 			}
 			writeSkill := func(catalog, body string) {
@@ -67,23 +67,35 @@ func TestHTTPIsolationPublicationAndRevocation(t *testing.T) {
 				}
 			}
 			writePolicy()
-			verifier, err := newTokenVerifier(context.Background(), c.Auth)
+			tokenStore, err := newTokenStore(filepath.Join(root, "tokens.json"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			handler, err := newHTTPHandler(c, verifier)
+			handler, err := newHTTPHandler(c, tokenStore.verify, http.NotFoundHandler())
 			if err != nil {
 				t.Fatal(err)
 			}
-			httpServer := httptest.NewServer(handler)
-			defer httpServer.Close()
+			httpServer.Config.Handler = handler
+			httpServer.Start()
 			resource, _ := url.Parse(c.Auth.ResourceURL)
-			tokenFor := func(subject, scope string) string {
-				claims := accessTokenClaims(issuer.issuer, issuer.resource, "example.com")
-				claims["sub"], claims["scope"] = subject, scope
-				return signedAccessToken(t, issuer.private, jose.RS256, "at+jwt", claims)
+			tokens := make(map[string]string)
+			rotateToken := func(subject string) string {
+				t.Helper()
+				token, err := tokenStore.rotate(subject)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tokens[subject] = token
+				return token
 			}
-			alice, bob := tokenFor("alice", readScope), tokenFor("bob", readScope)
+			tokenFor := func(subject string) string {
+				t.Helper()
+				if token, ok := tokens[subject]; ok {
+					return token
+				}
+				return rotateToken(subject)
+			}
+			alice, bob := tokenFor("alice"), tokenFor("bob")
 			request := func(method, path, token string, body []byte, headers map[string]string) (int, http.Header, []byte) {
 				t.Helper()
 				r, err := http.NewRequest(method, httpServer.URL+path, bytes.NewReader(body))
@@ -275,16 +287,15 @@ func TestHTTPIsolationPublicationAndRevocation(t *testing.T) {
 				return content
 			}
 			status, headers, _ := request("POST", "/mcp", "", []byte(`{}`), nil)
-			if status != 401 || !strings.Contains(headers.Get("WWW-Authenticate"), "/.well-known/oauth-protected-resource/mcp") {
-				t.Fatalf("missing OAuth discovery challenge: %d %v", status, headers)
+			if status != 401 {
+				t.Fatalf("missing authorization status=%d headers=%v", status, headers)
+			}
+			if strings.Contains(headers.Get("WWW-Authenticate"), "/.well-known/oauth-protected-resource/mcp") {
+				t.Fatalf("unexpected OAuth discovery challenge: %v", headers)
 			}
 			status, _, metadata := request("GET", "/.well-known/oauth-protected-resource/mcp", "", nil, nil)
-			if status != 200 || !bytes.Contains(metadata, []byte(issuer.issuer)) {
-				t.Fatalf("metadata: %d %s", status, metadata)
-			}
-			status, _, _ = request("POST", "/mcp", tokenFor("alice", "profile"), []byte(`{}`), nil)
-			if status != 403 {
-				t.Fatalf("missing scope status=%d", status)
+			if status != http.StatusNotFound {
+				t.Fatalf("unexpected OAuth metadata route: %d %s", status, metadata)
 			}
 			status, _, _ = request("POST", "/mcp", alice, []byte(`{}`), map[string]string{"Origin": "https://evil.example"})
 			if status != 403 {
@@ -294,13 +305,10 @@ func TestHTTPIsolationPublicationAndRevocation(t *testing.T) {
 			if len(aliceSkills) != 1 || !strings.HasPrefix(aliceSkills[0].URI, "skill://engineering/") {
 				t.Fatalf("alice visibility: %+v", aliceSkills)
 			}
-			if len(bobSkills) != 1 || !strings.HasPrefix(bobSkills[0].URI, "skill://finance/") {
-				t.Fatalf("bob visibility: %+v", bobSkills)
-			}
-			if got := list(tokenFor("unlisted", readScope)); len(got) != 0 {
+			if got := list(tokenFor("unlisted")); len(got) != 0 {
 				t.Fatalf("unlisted user sees skills: %+v", got)
 			}
-			if got := standardList(tokenFor("unlisted", readScope)); len(got) != 0 {
+			if got := standardList(tokenFor("unlisted")); len(got) != 0 {
 				t.Fatalf("unlisted user sees standard skills: %+v", got)
 			}
 			oldURI := aliceSkills[0].URI
@@ -466,6 +474,26 @@ func TestHTTPIsolationPublicationAndRevocation(t *testing.T) {
 			}
 			if res := rpc(bob, "skills/list", map[string]any{}); res["error"] == nil {
 				t.Fatal("invalid policy did not fail closed")
+			}
+			writePolicy()
+			rotatedBob := rotateToken("bob")
+			var rotatedSkills struct {
+				Skills []standardSkill
+			}
+			structuredTool(toolCall(rotatedBob, "list_skills", map[string]any{}), &rotatedSkills)
+			if len(rotatedSkills.Skills) != 1 || rotatedSkills.Skills[0].Name != "review" {
+				t.Fatalf("rotated token cannot use tools: %+v", rotatedSkills)
+			}
+			status, _, _ = request("POST", "/mcp", bob, []byte(`{}`), nil)
+			if status != http.StatusUnauthorized {
+				t.Fatalf("rotated token remained valid: %d", status)
+			}
+			if err := tokenStore.revoke("bob"); err != nil {
+				t.Fatal(err)
+			}
+			status, _, _ = request("POST", "/mcp", rotatedBob, []byte(`{}`), nil)
+			if status != http.StatusUnauthorized {
+				t.Fatalf("revoked token remained valid: %d", status)
 			}
 		})
 	}

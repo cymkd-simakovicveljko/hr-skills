@@ -25,34 +25,38 @@ serve    Serve authenticated Streamable HTTP MCP at /mcp.
 
 Configuration paths are relative to the configuration file. See
 config.example.json and policy.example.json. The publisher needs write access
-only to the store; the server needs read access to the store and policy file.
-Run one publisher per store. No Git credentials are needed by the server.
+only to the catalog store. The server reads that store, the policy, and Google
+client secret, and writes only auth.token_file. Run one server per token file
+and one publisher per catalog store. No Git credentials are needed by the server.
 Publish only trusted, quiescent checkouts; every file beneath a skill directory
 is distributed, including nested skills and hidden files (except .git).
 
-Authentication deployment contract:
-  Configure an external OAuth authorization server with Google Workspace login,
-  authorization-code + PKCE S256, and MCP-client registration support (registered
-  client IDs, dynamic registration, or client ID metadata documents as needed).
-  It must publish OIDC discovery/JWKS and issue RFC 9068 JWT access tokens with:
-    typ: at+jwt; iss: auth.issuer; aud: auth.resource_url; sub; exp; iat;
-    scope: skills:read; hd: the verified upstream Google Workspace domain.
-  Enforce the configured Workspace domain upstream. Do not copy an unverified
-  user-editable domain attribute into hd. Google ID/API tokens are not accepted.
-  Tokens must be asymmetric-signed. The provider handles login, consent, token
-  issuance/refresh, and client redirects; this server only verifies tokens.
+Authentication:
+  Register a separate Google OAuth Web application client. Its redirect URI is
+  the origin of auth.resource_url plus /auth/google/callback. Configure its
+  google_client_id and google_client_secret_file. The secret file contains only
+  the client secret, not downloaded Google JSON. Do not reuse another app's tokens.
+  Visit the public root URL, sign in with Google, and generate an MCP bearer token.
+  Google signatures, audience, expiry, nonce, verified email, and the configured
+  Workspace domain are verified. Google ID/API tokens cannot authenticate MCP.
+  Configure the MCP client with Authorization: Bearer <token>. Automatic client
+  OAuth is not provided. Tokens remain valid until rotated or revoked; only their
+  SHA-256 digests are persisted. Rotation replaces that user's previous token.
+  Browser sessions expire independently and are cleared on server restart.
 
-Policy subjects are stable OAuth issuer sub values, not emails or Google group
-names. Memberships are admin-managed; no Google Directory sync is implied.
-For example, add "provider-subject-id": ["engineering"] under subjects to grant
-that identity access to catalogs whose reader groups include engineering.
+Policy subjects are verified Google sub values, shown on the signed-in account
+page, not emails or Google group names. Memberships are admin-managed; no Google
+Directory sync is implied. Unlisted users can sign in to see their subject but
+cannot generate tokens. Add their subject under subjects with reader groups
+such as ["engineering"] to grant access to matching catalogs.
 Replace the policy file atomically to change grants; it is reread on every MCP
 request, including reads of old revisions. Invalid policy fails closed.
 
 Put HTTPS in front of serve, preserve the public Host, and keep the HTTP listener
 private (loopback by default). Browser cross-origin MCP requests are rejected.
-The OAuth metadata endpoint permits public cross-origin discovery. Do not expose
-the store, policy, source checkouts, or signing credentials over static HTTP.
+Do not expose the catalog store, token file, policy, source checkouts, or Google
+client secret over static HTTP. Protect auth.token_file and its directory from
+other users; revoke tokens and remove policy grants when access should end.
 MCP clients can use list_skills (metadata) and load_skill (instructions and
 reference URIs). Fetch only needed references with read_skill_resource or
 resources/read; resources/list does not enumerate files. Native skills clients
@@ -110,11 +114,11 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	if _, err := (&catalogStore{root: c.Store}).list(catalogNames); err != nil {
 		return fmt.Errorf("publish catalogs before serving: %w", err)
 	}
-	verifier, err := newTokenVerifier(ctx, c.Auth)
+	account, err := newAuthentication(ctx, c)
 	if err != nil {
 		return fmt.Errorf("authentication: %w", err)
 	}
-	handler, err := newHTTPHandler(c, verifier)
+	handler, err := newHTTPHandler(c, account.tokens.verify, account.handler())
 	if err != nil {
 		return err
 	}

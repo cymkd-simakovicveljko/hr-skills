@@ -11,7 +11,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/modelcontextprotocol/go-sdk/oauthex"
 )
 
 const skillsExtension = "io.modelcontextprotocol/skills"
@@ -224,7 +223,7 @@ func catalogError(err error) error {
 	return &jsonrpc.Error{Code: jsonrpc.CodeInternalError, Message: "catalog unavailable"}
 }
 
-func newHTTPHandler(c config, verifier auth.TokenVerifier) (http.Handler, error) {
+func newHTTPHandler(c config, verifier auth.TokenVerifier, accountHandler http.Handler) (http.Handler, error) {
 	server, err := newMCPServer(c)
 	if err != nil {
 		return nil, err
@@ -234,21 +233,16 @@ func newHTTPHandler(c config, verifier auth.TokenVerifier) (http.Handler, error)
 		return nil, err
 	}
 	origin := resource.Scheme + "://" + resource.Host
-	metadataPath := "/.well-known/oauth-protected-resource/mcp"
 	transport := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
 		Stateless: true, JSONResponse: true, MaxRequestBodyBytes: 1 << 20,
 		// Exact public Host is checked below, including requests from a local TLS proxy.
 		DisableLocalhostProtection: true, PropagateRequestCancellation: true,
 	})
 	protected := auth.RequireBearerToken(verifier, &auth.RequireBearerTokenOptions{
-		ResourceMetadataURL: origin + metadataPath, Scopes: []string{readScope},
+		Scopes: []string{readScope}, AllowMissingExpiration: true,
 	})(transport)
 	mux := http.NewServeMux()
-	mux.Handle(metadataPath, auth.ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
-		Resource: c.Auth.ResourceURL, AuthorizationServers: []string{c.Auth.Issuer},
-		ScopesSupported: []string{readScope}, BearerMethodsSupported: []string{"header"},
-		ResourceName: "hr-skills",
-	}))
+	mux.Handle("/", accountHandler)
 	mux.Handle("/mcp", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "private, no-store")
 		if requestOrigin := r.Header.Get("Origin"); requestOrigin != "" && requestOrigin != origin {
@@ -263,6 +257,7 @@ func newHTTPHandler(c config, verifier auth.TokenVerifier) (http.Handler, error)
 	}))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "private, no-store")
 		if !strings.EqualFold(r.Host, resource.Host) {
 			http.Error(w, "host not allowed", http.StatusMisdirectedRequest)
 			return

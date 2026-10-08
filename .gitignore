@@ -3,6 +3,8 @@
 /policy.json
 /data/
 /catalogs/
+/private/
+/secrets/
 .env
 .env.*
 !.env.example
