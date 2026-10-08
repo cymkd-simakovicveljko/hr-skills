@@ -1,9 +1,9 @@
 [Unit]
-Description=Check for hr-skills catalog updates every minute
+Description=Check for hr-skills catalog updates every 15 minutes
 
 [Timer]
 OnBootSec=1min
-OnUnitInactiveSec=1min
+OnUnitInactiveSec=15min
 AccuracySec=5s
 Unit=hr-skills-publish.service
 

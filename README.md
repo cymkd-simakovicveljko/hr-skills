@@ -165,7 +165,7 @@ Run one publisher per catalog store and one server per token file. The publisher
 
 ### Hosted catalog automation
 
-The Lightsail deployment pulls the private [hr-skills-catalog](https://github.com/cymkd-simakovicveljko/hr-skills-catalog) repository's `main` branch approximately every minute. [deploy/publish-catalog.sh](deploy/publish-catalog.sh) fetches and checks out the latest observed commit without running repository hooks, then publishes it. It records the commit only after successful publication; unchanged commits are skipped and failures are retried by the next timer run.
+The Lightsail deployment pulls the private [hr-skills-catalog](https://github.com/cymkd-simakovicveljko/hr-skills-catalog) repository's `main` branch approximately every 15 minutes, with an initial check one minute after boot. [deploy/publish-catalog.sh](deploy/publish-catalog.sh) fetches and checks out the latest observed commit without running repository hooks, then publishes it. It records the commit only after successful publication; unchanged commits are skipped and failures are retried by the next timer run.
 
 [deploy/hr-skills-publish.service](deploy/hr-skills-publish.service) and [deploy/hr-skills-publish.timer](deploy/hr-skills-publish.timer) provide serialization, boot activation, and journal logs. Use the service—not concurrent direct script invocations—for manual publishing. No inbound webhook, GitHub Actions server credential, or application restart is needed.
 
