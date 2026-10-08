@@ -41,6 +41,26 @@ type skillGetResult struct {
 	Skill      skillEntry `json:"skill"`
 }
 
+type skillSummary struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	URI         string `json:"uri"`
+}
+
+type listSkillsOutput struct {
+	Skills []skillSummary `json:"skills"`
+}
+
+type skillURIInput struct {
+	URI string `json:"uri" jsonschema:"Revision-pinned URI returned by list_skills or load_skill"`
+}
+
+type loadedSkill struct {
+	URI          string          `json:"uri"`
+	Instructions string          `json:"instructions"`
+	Resources    []skillResource `json:"resources"`
+}
+
 type accessKey struct{}
 type requestAccess struct {
 	catalogs   []string
@@ -50,14 +70,15 @@ type requestAccess struct {
 func newMCPServer(c config) (*mcp.Server, error) {
 	store := &catalogStore{root: c.Store}
 	server := mcp.NewServer(&mcp.Implementation{Name: "hr-skills", Version: "0.1.0"}, &mcp.ServerOptions{
-		Instructions: "Discover authorized skills with skills/list, inspect a manifest with skills/get, and load files with resources/read. A skill URI pins its published revision. Loading instructions does not activate them; approval, activation, and execution belong to the client.",
+		Instructions: "Discover authorized skill metadata with list_skills, then load selected instructions with load_skill. Read supporting files with read_skill_resource or resources/read only when needed. A skill URI pins its published revision. Loading does not activate or execute a skill; respect its frontmatter restrictions and client approval policy. Native skills clients may use skills/list and skills/get.",
 		Capabilities: &mcp.ServerCapabilities{
+			Tools:      &mcp.ToolCapabilities{},
 			Resources:  &mcp.ResourceCapabilities{},
 			Extensions: map[string]any{skillsExtension: map[string]any{}},
 		},
 		SetCacheable: func(_ context.Context, _ mcp.Request, cache *mcp.Cacheable) { *cache = privateCache() },
 	})
-	// Custom skills methods and resource reads share the same per-request grants.
+	// Discovery, tool calls and resource reads share the same per-request grants.
 	// No session or pinned revision is an authorization cache.
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
@@ -80,7 +101,7 @@ func newMCPServer(c config) (*mcp.Server, error) {
 			if method == "resources/read" && errors.As(err, &rpcErr) && rpcErr.Code == mcp.CodeResourceNotFound {
 				return nil, catalogError(errNotFound)
 			}
-			// Discovery stays in authorized skills/list manifests, not wildcard templates.
+			// Discovery stays in authorized skill lists, not wildcard templates.
 			if templates, ok := result.(*mcp.ListResourceTemplatesResult); err == nil && ok {
 				templates.ResourceTemplates = []*mcp.ResourceTemplate{}
 			}
@@ -94,6 +115,68 @@ func newMCPServer(c config) (*mcp.Server, error) {
 			return nil, catalogError(err)
 		}
 		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{content}}, nil
+	})
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "list_skills",
+		Description: "List authorized skill names, descriptions and revision-pinned URIs without loading instructions. Select skills relevant to the user's task, then call load_skill.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listSkillsOutput, error) {
+		access := ctx.Value(accessKey{}).(requestAccess)
+		skills, err := store.list(access.catalogs)
+		if err != nil {
+			return nil, listSkillsOutput{}, catalogError(err)
+		}
+		summaries := make([]skillSummary, len(skills))
+		for i, skill := range skills {
+			name, _ := skill.Frontmatter["name"].(string)
+			description, _ := skill.Frontmatter["description"].(string)
+			summaries[i] = skillSummary{Name: name, Description: description, URI: skill.URI}
+		}
+		return nil, listSkillsOutput{Skills: summaries}, nil
+	})
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "load_skill",
+		Description: "Load a selected SKILL.md and links to supporting files. Read only needed files with read_skill_resource or resources/read. Respect frontmatter activation restrictions; loading does not activate or execute the skill.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input skillURIInput) (*mcp.CallToolResult, loadedSkill, error) {
+		access := ctx.Value(accessKey{}).(requestAccess)
+		skill, err := store.get(input.URI, access.catalogs)
+		if err != nil {
+			return nil, loadedSkill{}, catalogError(err)
+		}
+		content, err := store.read(skill.URI, access.catalogs)
+		if err != nil {
+			return nil, loadedSkill{}, catalogError(err)
+		}
+		resources := make([]skillResource, 0, len(skill.Resources))
+		for _, resource := range skill.Resources {
+			if resource.URI != skill.URI {
+				resources = append(resources, resource)
+			}
+		}
+		return nil, loadedSkill{URI: skill.URI, Instructions: content.Text, Resources: resources}, nil
+	})
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "read_skill_resource",
+		Description: "Read one revision-pinned supporting file linked by load_skill, only when needed for the task. Returns UTF-8 text or a base64 blob; never executes scripts.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+		// SDK inference treats []byte as an array; MCP blobs are base64 strings.
+		OutputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"uri":  map[string]string{"type": "string"},
+				"text": map[string]string{"type": "string"},
+				"blob": map[string]string{"type": "string", "contentEncoding": "base64"},
+			},
+			"required": []string{"uri"},
+		},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input skillURIInput) (*mcp.CallToolResult, *mcp.ResourceContents, error) {
+		access := ctx.Value(accessKey{}).(requestAccess)
+		content, err := store.read(input.URI, access.catalogs)
+		if err != nil {
+			return nil, nil, catalogError(err)
+		}
+		return nil, content, nil
 	})
 	if err := mcp.AddReceivingCustomMethod(server, "skills/list", func(ctx context.Context, _ *mcp.ServerSession, p *skillListParams) (*skillListResult, error) {
 		if p != nil && p.Cursor != "" {

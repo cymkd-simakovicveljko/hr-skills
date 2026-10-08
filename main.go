@@ -53,8 +53,11 @@ Put HTTPS in front of serve, preserve the public Host, and keep the HTTP listene
 private (loopback by default). Browser cross-origin MCP requests are rejected.
 The OAuth metadata endpoint permits public cross-origin discovery. Do not expose
 the store, policy, source checkouts, or signing credentials over static HTTP.
-Clients must support io.modelcontextprotocol/skills; the server does not run
-scripts or automatically activate skills in a model's context.
+MCP clients can use list_skills (metadata) and load_skill (instructions and
+reference URIs). Fetch only needed references with read_skill_resource or
+resources/read; resources/list does not enumerate files. Native skills clients
+may use io.modelcontextprotocol/skills. The server does not run scripts or
+automatically activate skills in a model's context.
 `
 
 func main() {

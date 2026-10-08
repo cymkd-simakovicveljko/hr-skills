@@ -35,7 +35,7 @@ func TestHTTPIsolationPublicationAndRevocation(t *testing.T) {
 				if err := os.MkdirAll(dir, 0700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: review\ndescription: Review work\n---\n"+body), 0600); err != nil {
+				if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: review\ndescription: Review work\ndisable-model-invocation: true\n---\n"+body), 0600); err != nil {
 					t.Fatal(err)
 				}
 				if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("supporting evidence"), 0600); err != nil {
@@ -121,8 +121,11 @@ func TestHTTPIsolationPublicationAndRevocation(t *testing.T) {
 					t.Fatal(err)
 				}
 				requestHeaders := map[string]string{"Mcp-Method": method}
-				if method == "resources/read" {
+				switch method {
+				case "resources/read":
 					requestHeaders["Mcp-Name"] = params["uri"].(string)
+				case "tools/call":
+					requestHeaders["Mcp-Name"] = params["name"].(string)
 				}
 				status, headers, data := request("POST", "/mcp", token, body, requestHeaders)
 				if (status != http.StatusOK && status != http.StatusBadRequest && status != http.StatusInternalServerError) || headers.Get("Cache-Control") != "private, no-store" {
@@ -187,6 +190,90 @@ func TestHTTPIsolationPublicationAndRevocation(t *testing.T) {
 				}
 				return result.Contents[0].Text
 			}
+			toolCall := func(token, name string, arguments any) map[string]json.RawMessage {
+				t.Helper()
+				return rpc(token, "tools/call", map[string]any{"name": name, "arguments": arguments})
+			}
+			structuredTool := func(res map[string]json.RawMessage, output any) {
+				t.Helper()
+				if res["error"] != nil {
+					t.Fatalf("tool RPC error: %s", res["error"])
+				}
+				var result struct {
+					StructuredContent json.RawMessage `json:"structuredContent"`
+					IsError           bool            `json:"isError"`
+				}
+				if err := json.Unmarshal(res["result"], &result); err != nil {
+					t.Fatal(err)
+				}
+				if result.IsError {
+					t.Fatalf("unexpected tool error: %s", res["result"])
+				}
+				decoder := json.NewDecoder(bytes.NewReader(result.StructuredContent))
+				// Extra fields could disclose instructions or supporting bytes early.
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(output); err != nil {
+					t.Fatal(err)
+				}
+			}
+			expectToolError := func(res map[string]json.RawMessage) {
+				t.Helper()
+				if res["error"] != nil {
+					return
+				}
+				var result struct {
+					IsError bool `json:"isError"`
+				}
+				if err := json.Unmarshal(res["result"], &result); err != nil {
+					t.Fatal(err)
+				}
+				if !result.IsError {
+					t.Fatalf("expected tool error: %s", res["result"])
+				}
+			}
+			type standardSkill struct {
+				Name        string
+				Description string
+				URI         string
+			}
+			type standardResource struct {
+				URI    string
+				Digest string
+				Size   int64
+			}
+			standardList := func(token string) []standardSkill {
+				t.Helper()
+				var content struct {
+					Skills []standardSkill
+				}
+				structuredTool(toolCall(token, "list_skills", map[string]any{}), &content)
+				if content.Skills == nil {
+					t.Fatal("list_skills must return an array, including when empty")
+				}
+				return content.Skills
+			}
+			loadSkill := func(token, uri string) (string, []standardResource) {
+				t.Helper()
+				var content struct {
+					URI          string
+					Instructions string
+					Resources    []standardResource
+				}
+				structuredTool(toolCall(token, "load_skill", map[string]any{"uri": uri}), &content)
+				if content.URI != uri {
+					t.Fatalf("load_skill URI=%q, want %q", content.URI, uri)
+				}
+				return content.Instructions, content.Resources
+			}
+			readResource := func(token, uri string) mcp.ResourceContents {
+				t.Helper()
+				var content mcp.ResourceContents
+				structuredTool(toolCall(token, "read_skill_resource", map[string]any{"uri": uri}), &content)
+				if content.URI != uri {
+					t.Fatalf("read_skill_resource URI=%q, want %q", content.URI, uri)
+				}
+				return content
+			}
 			status, headers, _ := request("POST", "/mcp", "", []byte(`{}`), nil)
 			if status != 401 || !strings.Contains(headers.Get("WWW-Authenticate"), "/.well-known/oauth-protected-resource/mcp") {
 				t.Fatalf("missing OAuth discovery challenge: %d %v", status, headers)
@@ -213,10 +300,50 @@ func TestHTTPIsolationPublicationAndRevocation(t *testing.T) {
 			if got := list(tokenFor("unlisted", readScope)); len(got) != 0 {
 				t.Fatalf("unlisted user sees skills: %+v", got)
 			}
+			if got := standardList(tokenFor("unlisted", readScope)); len(got) != 0 {
+				t.Fatalf("unlisted user sees standard skills: %+v", got)
+			}
 			oldURI := aliceSkills[0].URI
+			aliceStandard, bobStandard := standardList(alice), standardList(bob)
+			if len(aliceStandard) != 1 || aliceStandard[0].Name != "review" || aliceStandard[0].Description != "Review work" {
+				t.Fatalf("alice standard visibility: %+v", aliceStandard)
+			}
+			if len(bobStandard) != 1 || bobStandard[0].Name != "review" || bobStandard[0].Description != "Review work" {
+				t.Fatalf("bob standard visibility: %+v", bobStandard)
+			}
 			oldContent := readContent(alice, oldURI)
+			if aliceStandard[0].URI != oldURI {
+				t.Fatalf("standard discovery URI=%q, custom URI=%q", aliceStandard[0].URI, oldURI)
+			}
 			if !strings.HasSuffix(oldContent, "engineering-v1") {
 				t.Fatalf("wrong content: %q", oldContent)
+			}
+			instructions, resources := loadSkill(alice, oldURI)
+			wantInstructions := "---\nname: review\ndescription: Review work\ndisable-model-invocation: true\n---\nengineering-v1"
+			if instructions != wantInstructions {
+				t.Fatalf("load_skill instructions=%q, want full SKILL.md", instructions)
+			}
+			expectedResources := map[string]int64{
+				strings.TrimSuffix(oldURI, "SKILL.md") + "notes.txt": 19,
+				strings.TrimSuffix(oldURI, "SKILL.md") + "data.bin":  2,
+				strings.TrimSuffix(oldURI, "SKILL.md") + "empty.txt": 0,
+			}
+			if len(resources) != len(expectedResources) {
+				t.Fatalf("load_skill resources=%+v", resources)
+			}
+			for _, resource := range resources {
+				wantSize, ok := expectedResources[resource.URI]
+				if !ok || resource.Size != wantSize || !strings.HasPrefix(resource.Digest, "sha256:") {
+					t.Fatalf("unexpected load_skill resource: %+v", resource)
+				}
+				delete(expectedResources, resource.URI)
+			}
+			if len(expectedResources) != 0 {
+				t.Fatalf("missing load_skill resources: %+v", expectedResources)
+			}
+			supportingURI := strings.TrimSuffix(oldURI, "SKILL.md") + "notes.txt"
+			if got := readResource(alice, supportingURI); got.Text != "supporting evidence" {
+				t.Fatalf("supporting file via tool=%+v", got)
 			}
 			if got := readContent(alice, strings.TrimSuffix(oldURI, "SKILL.md")+"notes.txt"); got != "supporting evidence" {
 				t.Fatalf("supporting file=%q", got)
@@ -230,6 +357,28 @@ func TestHTTPIsolationPublicationAndRevocation(t *testing.T) {
 				if len(result.Contents) != 1 || result.Contents[0].Blob == nil || !bytes.Equal(result.Contents[0].Blob, want) {
 					t.Fatalf("%s lost binary/empty content: %+v", name, result.Contents)
 				}
+				content := readResource(alice, strings.TrimSuffix(oldURI, "SKILL.md")+name)
+				if content.Blob == nil || !bytes.Equal(content.Blob, want) {
+					t.Fatalf("%s lost binary/empty content via tool: %+v", name, content)
+				}
+			}
+			expectToolError(toolCall(alice, "load_skill", map[string]any{}))
+			expectToolError(toolCall(alice, "load_skill", map[string]any{"uri": 17}))
+			unknownLoad := toolCall(alice, "load_skill", map[string]any{"uri": "skill://absent/unknown/SKILL.md"})
+			for _, name := range []string{"load_skill", "read_skill_resource"} {
+				unknown := toolCall(alice, name, map[string]any{"uri": "skill://absent/unknown/SKILL.md"})
+				denied := toolCall(alice, name, map[string]any{"uri": bobSkills[0].URI})
+				if denied["error"] == nil || !bytes.Equal(denied["error"], unknown["error"]) {
+					t.Fatalf("%s leaked forbidden skill: denied=%s unknown=%s", name, denied["error"], unknown["error"])
+				}
+			}
+			emptyLoad := toolCall(alice, "load_skill", map[string]any{"uri": ""})
+			if emptyLoad["error"] == nil || !bytes.Equal(emptyLoad["error"], unknownLoad["error"]) {
+				t.Fatalf("load_skill distinguished empty from unknown URI: empty=%s unknown=%s", emptyLoad["error"], unknownLoad["error"])
+			}
+			supportingLoad := toolCall(alice, "load_skill", map[string]any{"uri": supportingURI})
+			if supportingLoad["error"] == nil || !bytes.Equal(supportingLoad["error"], unknownLoad["error"]) {
+				t.Fatalf("load_skill accepted supporting URI: supporting=%s unknown=%s", supportingLoad["error"], unknownLoad["error"])
 			}
 			templates := rpc(alice, "resources/templates/list", map[string]any{})
 			var templateList mcp.ListResourceTemplatesResult
@@ -254,25 +403,61 @@ func TestHTTPIsolationPublicationAndRevocation(t *testing.T) {
 				}
 			}
 			writeSkill("engineering", "engineering-v2")
+			if err := os.WriteFile(filepath.Join(root, "engineering", "review", "notes.txt"), []byte("updated evidence"), 0600); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := publishCatalogs(c); err != nil {
 				t.Fatal(err)
 			}
 			newURI := list(alice)[0].URI
+			newStandard := standardList(alice)
+			if len(newStandard) != 1 || newStandard[0].URI == oldURI || newStandard[0].Name != "review" || newStandard[0].Description != "Review work" {
+				t.Fatalf("new standard publication not visible: %+v", newStandard)
+			}
+			newInstructions, _ := loadSkill(alice, newURI)
+			if newInstructions != "---\nname: review\ndescription: Review work\ndisable-model-invocation: true\n---\nengineering-v2" {
+				t.Fatalf("new standard publication instructions=%q", newInstructions)
+			}
+			oldInstructions, _ := loadSkill(alice, oldURI)
+			if oldInstructions != wantInstructions {
+				t.Fatalf("old standard revision changed: %q", oldInstructions)
+			}
 			if newURI == oldURI || !strings.HasSuffix(readContent(alice, newURI), "engineering-v2") {
 				t.Fatal("new publication not visible")
 			}
 			if readContent(alice, oldURI) != oldContent {
 				t.Fatal("pinned revision changed")
 			}
+			if got := readResource(alice, supportingURI); got.Text != "supporting evidence" {
+				t.Fatalf("pinned supporting file changed via tool: %+v", got)
+			}
+			if got := readResource(alice, strings.TrimSuffix(newURI, "SKILL.md")+"notes.txt"); got.Text != "updated evidence" {
+				t.Fatalf("new supporting file unavailable via tool: %+v", got)
+			}
 			delete(p.Subjects, "alice")
 			writePolicy()
 			if len(list(alice)) != 0 {
 				t.Fatal("revoked membership still listed")
 			}
+			if len(standardList(alice)) != 0 {
+				t.Fatal("revoked membership still listed by list_skills")
+			}
 			for _, uri := range []string{oldURI, newURI} {
 				for _, method := range []string{"skills/get", "resources/read"} {
 					if res := rpc(alice, method, map[string]any{"uri": uri}); res["error"] == nil {
 						t.Fatalf("revoked membership still accesses pinned resource via %s", method)
+					}
+				}
+			}
+			for _, name := range []string{"load_skill", "read_skill_resource"} {
+				unknown := toolCall(alice, name, map[string]any{"uri": "skill://absent/unknown/SKILL.md"})
+				for _, uri := range []string{oldURI, newURI} {
+					if name == "read_skill_resource" {
+						uri = strings.TrimSuffix(uri, "SKILL.md") + "notes.txt"
+					}
+					revoked := toolCall(alice, name, map[string]any{"uri": uri})
+					if revoked["error"] == nil || !bytes.Equal(revoked["error"], unknown["error"]) {
+						t.Fatalf("revoked membership still accesses %s via %s: revoked=%s unknown=%s", uri, name, revoked["error"], unknown["error"])
 					}
 				}
 			}
