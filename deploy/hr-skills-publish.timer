@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for hr-skills catalog updates every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=1min
+AccuracySec=5s
+Unit=hr-skills-publish.service
+
+[Install]
+WantedBy=timers.target

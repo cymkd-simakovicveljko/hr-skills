@@ -163,6 +163,35 @@ Every file beneath a skill directory is distributed, including nested skills and
 
 Run one publisher per catalog store and one server per token file. The publisher needs write access to the store. The runtime reads the store, policy, and Google client secret, and writes its token file; it does not need Git credentials.
 
+### Hosted catalog automation
+
+The Lightsail deployment pulls the private [hr-skills-catalog](https://github.com/cymkd-simakovicveljko/hr-skills-catalog) repository's `main` branch approximately every minute. [deploy/publish-catalog.sh](deploy/publish-catalog.sh) fetches and checks out the latest observed commit without running repository hooks, then publishes it. It records the commit only after successful publication; unchanged commits are skipped and failures are retried by the next timer run.
+
+[deploy/hr-skills-publish.service](deploy/hr-skills-publish.service) and [deploy/hr-skills-publish.timer](deploy/hr-skills-publish.timer) provide serialization, boot activation, and journal logs. Use the service—not concurrent direct script invocations—for manual publishing. No inbound webhook, GitHub Actions server credential, or application restart is needed.
+
+The installed layout is deployment-specific:
+
+- Publisher script: `/opt/hr-skills/publish-catalog.sh`.
+- Root-owned source checkout: `/opt/hr-skills/catalogs/repository`; `engineering` maps to its `engineering/` directory in `/etc/hr-skills/config.json`.
+- Read-only, repository-scoped GitHub deploy key: `/etc/credstore.encrypted/hr-skills-catalog.github-deploy-key`, encrypted with systemd credential name `github-deploy-key`. Only the publisher receives the decrypted credential.
+- GitHub SSH host keys: `/etc/hr-skills/github_known_hosts`, pinned from GitHub's HTTPS `/meta` API; unknown host keys fail closed.
+- Successful commit marker: `/var/lib/hr-skills-catalog/published-commit`. Documentation-only commits can advance this marker without changing the content-addressed catalog revision.
+- Catalog store: owned by `hr-skills:hr-skills`. The root publisher drops to this UID before publishing so newly created private files are immediately readable by the server. The HTTP service retains `ProtectSystem=strict` with only `/var/lib/hr-skills/auth` writable, keeping its catalog store read-only. Preserve this sandbox if changing the service unit.
+
+To install updated publisher files on this host, copy the script to its path above and the two units to `/etc/systemd/system/`, then run `sudo systemctl daemon-reload` and `sudo systemctl enable --now hr-skills-publish.timer`. Provision the listed credential, host keys, source directory, store ownership, and catalog mapping before a first installation.
+
+Operational checks on Lightsail:
+
+```bash
+sudo systemctl start hr-skills-publish.service
+sudo systemctl is-active hr-skills-publish.timer hr-skills.service
+sudo journalctl -u hr-skills-publish.service -n 30 --no-pager
+sudo cat /var/lib/hr-skills-catalog/published-commit
+test "$(sudo cat /var/lib/hr-skills-catalog/published-commit)" = "$(sudo git -C /opt/hr-skills/catalogs/repository rev-parse HEAD)"
+```
+
+Compare the recorded commit with GitHub `main`. A failed fetch or invalid catalog does not replace the last good published catalog. To roll back content, revert the relevant commit in the catalog repository and push to `main`. Clients must discover and load the new revision; instructions already loaded into a conversation do not change automatically.
+
 ### Grant access
 
 The example configuration calls its catalog `shared`. Its policy permits the `engineering` group to read that catalog. After a user signs in, add their verified Google subject to the policy:

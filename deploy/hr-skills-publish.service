@@ -1,0 +1,27 @@
+[Unit]
+Description=Publish hr-skills-catalog main from GitHub
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+StateDirectory=hr-skills-catalog
+StateDirectoryMode=0700
+LoadCredentialEncrypted=github-deploy-key:/etc/credstore.encrypted/hr-skills-catalog.github-deploy-key
+ExecStart=/opt/hr-skills/publish-catalog.sh
+TimeoutStartSec=120
+UMask=0077
+NoNewPrivileges=yes
+AmbientCapabilities=CAP_SETUID
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/hr-skills/catalogs/repository /var/lib/hr-skills/catalog-store
+InaccessiblePaths=/var/lib/hr-skills/auth
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
