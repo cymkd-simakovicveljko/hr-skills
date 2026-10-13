@@ -79,9 +79,9 @@ In an already-open OMP session:
 
 Then ask the agent:
 
-> List the skills available from hr-skills, then load a relevant skill without executing anything.
+> Discover hr-skills, load using-agent-skills, and explain which procedure you would use for a failing unit test with a cheap local reproduction. Do not change files or execute a repair.
 
-Success means the configured client returns authorized skill metadata and can load a returned revision-pinned URI. An empty catalog may reflect your access policy; it does not prove the server is disconnected.
+Success means the client loads the router from a returned revision-pinned URI and selects the debugging and focused regression procedures without starting a repair. Inspect the tool activity, not just the agent's claim. If `using-agent-skills` is absent, the workflow catalog has not been published or is not authorized for this account. An empty catalog may reflect access policy; it does not prove the server is disconnected.
 
 New default-profile OMP sessions discover this connection automatically. You do not need to sign in or paste the token again for each session.
 
@@ -100,21 +100,28 @@ OMP can expose the tools through its discoverable `xd://` tool surface. Runtime 
 
 Connecting makes these tools available; it does **not** guarantee the agent will call them. Loading a skill also does not override its frontmatter activation restrictions, client approval rules, or higher-priority instructions.
 
-### Bootstrap discovery without another skill
+### Bootstrap the company workflow
 
-Use a short instruction in an **always-loaded instruction file**, not a skill that itself has to be discovered. For OMP, append the following to the effective `APPEND_SYSTEM.md` for your user/profile or project. The default user location is `~/.omp/agent/APPEND_SYSTEM.md`; preserve its existing contents. Project-level or explicit CLI prompt overrides may take precedence.
+Use a short instruction in an **always-loaded instruction file**, not another skill that itself has to be discovered. For OMP, append the following to the effective `APPEND_SYSTEM.md` for your user/profile or project. The default user location is `~/.omp/agent/APPEND_SYSTEM.md`; preserve its existing contents. Project-level or explicit CLI prompt overrides may take precedence.
 
 ```text
-Once per session, call the hr-skills server's list_skills tool. Before work
-that matches an available skill, load that skill and follow its applicable
-instructions and activation restrictions. Fetch supporting files only as
-needed. If hr-skills is unavailable, report that and continue without claiming
-its skills were applied.
+At the start of an engineering task, call hr-skills list_skills and load
+using-agent-skills using its returned revision-pinned URI. Reuse an identical
+URI already loaded. Follow its applicable routing and activation rules; load
+only the procedures and supporting resources needed for the task. Retain the
+selected revision for that task. Use the host's exposed tool names.
+If the server or router is unavailable or ambiguous, report the gap. Continue
+only independently justified work under existing instructions; pause steps
+that depend on missing safety guidance. Do not claim the shared workflow ran.
+Loading instructions does not authorize commits, pushes, publication,
+deployment, destructive actions, or bypassing host approvals.
 ```
 
-This is an onboarding instruction to add explicitly. Connecting the server or reading this README does not install it automatically.
+For other clients, put the same bootstrap in their supported always-loaded project or managed instructions; OMP's filename and configuration syntax are not portable. Team rollout requires configuring and checking each supported client, not only publishing the catalog. Each developer keeps their own credentials.
 
-The flow is: **one local instruction → remote catalog metadata → selected skill instructions**. The bootstrap stays fixed as the catalog grows. No rule needs to preload every skill or copy the catalog into each repository.
+The flow is **client bootstrap → catalog metadata → `using-agent-skills` → selected procedures and resources**. The bootstrap stays fixed as routing evolves. The current catalog router and its procedures support model invocation; a future explicit-use skill still needs explicit invocation. The server delivers content and preserves its frontmatter; it does not execute or enforce the workflow.
+
+Add the bootstrap explicitly, then start a fresh session so the client reads it. Publishing the router does not update already-loaded sessions. Keep the skill URIs and verification evidence in the existing task or PR record; required CI checks and approval controls remain authoritative.
 
 ## Token lifecycle and troubleshooting
 
@@ -125,7 +132,7 @@ The flow is: **one local instruction → remote catalog metadata → selected sk
 - **401:** check that the header contains `Bearer ` followed by the current hr-skills token. A revoked token, another application's token, or a browser session is not sufficient.
 - **Verified login but no access:** ask an administrator to grant catalog access to the Google subject shown on the account page. Email addresses are not policy subject keys.
 - **Server absent from OMP:** check the active profile, JSON validity, project overrides, and `/mcp list`. Use `/mcp reload` after changing configuration.
-- **Server connected but skills unused:** add the bootstrap instruction above or explicitly ask the agent to discover skills.
+- **Server connected but skills unused:** install the bootstrap above in the effective instruction file, start a fresh session, and verify discovery plus router loading in the tool activity.
 - **No files in `resources/list`:** intentional. Use `list_skills`, then `load_skill`, then `read_skill_resource`. Do not depend on a client-wide resource browser to enumerate the catalog.
 
 ## Run your own server
