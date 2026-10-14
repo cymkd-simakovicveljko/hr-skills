@@ -81,7 +81,7 @@ Then ask the agent:
 
 > Discover hr-skills, load using-agent-skills, and explain which procedure you would use for a failing unit test with a cheap local reproduction. Do not change files or execute a repair.
 
-Success means the client loads the router from a returned revision-pinned URI and selects the debugging and focused regression procedures without starting a repair. Inspect the tool activity, not just the agent's claim. If `using-agent-skills` is absent, the workflow catalog has not been published or is not authorized for this account. An empty catalog may reflect access policy; it does not prove the server is disconnected.
+Success means the client loads the router from a returned revision-pinned URI and selects `debugging-and-error-recovery` plus the default `test-driven-development` procedure without starting a repair. Inspect the tool activity, not just the agent's claim. If `using-agent-skills` is absent, the workflow catalog has not been published or is not authorized for this account. An empty catalog may reflect access policy; it does not prove the server is disconnected.
 
 New default-profile OMP sessions discover this connection automatically. You do not need to sign in or paste the token again for each session.
 
@@ -119,7 +119,9 @@ deployment, destructive actions, or bypassing host approvals.
 
 For other clients, put the same bootstrap in their supported always-loaded project or managed instructions; OMP's filename and configuration syntax are not portable. Team rollout requires configuring and checking each supported client, not only publishing the catalog. Each developer keeps their own credentials.
 
-The flow is **client bootstrap → catalog metadata → `using-agent-skills` → selected procedures and resources**. The bootstrap stays fixed as routing evolves. The current catalog router and its procedures support model invocation; a future explicit-use skill still needs explicit invocation. The server delivers content and preserves its frontmatter; it does not execute or enforce the workflow.
+The flow is **client bootstrap → catalog metadata → `using-agent-skills` → selected procedures and resources**. The bootstrap stays fixed as routing evolves. The [catalog](https://github.com/cymkd-simakovicveljko/hr-skills-catalog) contains all 25 Osmani SDLC skills and five supplements: the Osmani skills and three risk-specific supplements support model invocation, while `grill-me` and pstack `tdd` require explicit selection as alternatives to `interview-me` and `test-driven-development`. The server preserves these restrictions in the delivered instructions; it does not execute or enforce the workflow.
+
+The router supplies all nine lifecycle modes as MCP-readable resources: spec, plan, build (including auto/all), test, review, code-simplify, constraints (including check/guard/ratchet), ship, and webperf (quick/deep). Ask in natural language, such as “run the build auto workflow.” This does not install native slash commands, named agents, hooks or browser tooling. Full-plan execution still needs plan approval; release readiness is not deployment authorization. Verify the published catalog through `list_skills` rather than assuming the server already has a local catalog edit.
 
 Add the bootstrap explicitly, then start a fresh session so the client reads it. Publishing the router does not update already-loaded sessions. Keep the skill URIs and verification evidence in the existing task or PR record; required CI checks and approval controls remain authoritative.
 
