@@ -442,6 +442,44 @@ func TestHTTPIsolationPublicationAndRevocation(t *testing.T) {
 			if got := readResource(alice, strings.TrimSuffix(newURI, "SKILL.md")+"notes.txt"); got.Text != "updated evidence" {
 				t.Fatalf("new supporting file unavailable via tool: %+v", got)
 			}
+			// Workspace-wide access applies only to the opted-in catalog and still needs a valid token.
+			p.Catalogs["engineering"] = []string{"*"}
+			writePolicy()
+			unlisted := tokenFor("unlisted")
+			if got := standardList(unlisted); len(got) != 1 || got[0].URI != newURI {
+				t.Fatalf("workspace account without individual membership cannot discover engineering: %+v", got)
+			}
+			if got := list(unlisted); len(got) != 1 || got[0].URI != newURI {
+				t.Fatalf("workspace account cannot use native skill discovery: %+v", got)
+			}
+			if got, _ := loadSkill(unlisted, oldURI); got != wantInstructions {
+				t.Fatal("workspace account cannot load a pinned skill")
+			}
+			if got := readResource(unlisted, supportingURI); got.Text != "supporting evidence" {
+				t.Fatal("workspace account cannot read a pinned supporting resource")
+			}
+			expectToolError(toolCall(unlisted, "load_skill", map[string]any{"uri": bobSkills[0].URI}))
+			for _, invalidToken := range []string{"", "not-a-token"} {
+				status, _, _ := request("POST", "/mcp", invalidToken, []byte(`{}`), nil)
+				if status != http.StatusUnauthorized {
+					t.Fatalf("workspace access accepted a missing or invalid token: %d", status)
+				}
+			}
+			if err := tokenStore.revoke("unlisted"); err != nil {
+				t.Fatal(err)
+			}
+			status, _, _ = request("POST", "/mcp", unlisted, []byte(`{}`), nil)
+			if status != http.StatusUnauthorized {
+				t.Fatalf("workspace access accepted a revoked token: %d", status)
+			}
+			unlisted = rotateToken("unlisted")
+			p.Catalogs["engineering"] = []string{"developers"}
+			writePolicy()
+			if len(standardList(unlisted)) != 0 {
+				t.Fatal("removed workspace grant remained cached")
+			}
+			expectToolError(toolCall(unlisted, "load_skill", map[string]any{"uri": oldURI}))
+
 			delete(p.Subjects, "alice")
 			writePolicy()
 			if len(list(alice)) != 0 {

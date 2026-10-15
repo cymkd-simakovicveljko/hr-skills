@@ -33,7 +33,7 @@ type config struct {
 	Catalogs   []catalogConfig `json:"catalogs"`
 }
 
-// Memberships are administered here, keyed by verified Google subject, not email.
+// Catalog reader "*" permits any authenticated workspace account; other readers are subject groups.
 type policy struct {
 	Subjects map[string][]string `json:"subjects"`
 	Catalogs map[string][]string `json:"catalogs"`
@@ -172,7 +172,7 @@ func allowedCatalogs(path, subject string) ([]string, error) {
 			return nil, fmt.Errorf("invalid catalog in policy")
 		}
 		for _, group := range readers {
-			if groups[group] {
+			if subject != "" && (group == "*" || groups[group]) {
 				allowed = append(allowed, catalog)
 				break
 			}

@@ -1,6 +1,6 @@
 {
   "subjects": {},
   "catalogs": {
-    "shared": ["engineering"]
+    "shared": ["*"]
   }
 }

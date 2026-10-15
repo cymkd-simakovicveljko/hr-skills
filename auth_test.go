@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -404,7 +405,7 @@ func TestLoginStatePKCEAndBrowserBinding(t *testing.T) {
 
 func TestAccountActionsRequireOriginAndSessionCSRF(t *testing.T) {
 	policyPath := t.TempDir() + "/policy.json"
-	if err := os.WriteFile(policyPath, []byte(`{"subjects":{"subject-a":["readers"],"subject-b":["other"]},"catalogs":{"alpha":["readers"]}}`), 0o600); err != nil {
+	if err := os.WriteFile(policyPath, []byte(`{"subjects":{},"catalogs":{"alpha":["*"]}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	store, err := newTokenStore(t.TempDir() + "/tokens.json")
@@ -424,11 +425,24 @@ func TestAccountActionsRequireOriginAndSessionCSRF(t *testing.T) {
 	req.AddCookie(&http.Cookie{Name: "hr_session", Value: "session-a"})
 	response := httptest.NewRecorder()
 	a.handler().ServeHTTP(response, req)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "New token") {
-		t.Fatalf("authorized rotate = %d, %s", response.Code, response.Body.String())
+	if response.Code != http.StatusOK {
+		t.Fatalf("workspace account without individual membership cannot rotate: %d", response.Code)
+	}
+	token := regexp.MustCompile(`hrs_[A-Za-z0-9_-]{43}`).FindString(response.Body.String())
+	if info, err := store.verify(context.Background(), token, req); err != nil || info.UserID != "subject-a" {
+		t.Fatal("account response did not contain a usable personal token")
 	}
 	if strings.Contains(response.Body.String(), "subject-b") {
 		t.Fatal("account page exposed another subject")
+	}
+
+	anonymous := httptest.NewRequest(http.MethodPost, "/tokens/rotate", strings.NewReader("csrf=csrf-a"))
+	anonymous.Header.Set("Origin", a.origin)
+	anonymous.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	anonymousResponse := httptest.NewRecorder()
+	a.handler().ServeHTTP(anonymousResponse, anonymous)
+	if anonymousResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous rotation status = %d, want 401", anonymousResponse.Code)
 	}
 
 	badOrigin := httptest.NewRequest(http.MethodPost, "/tokens/revoke", strings.NewReader("csrf=csrf-a"))
