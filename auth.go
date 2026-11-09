@@ -703,7 +703,7 @@ func writeSecurityHeaders(w http.ResponseWriter) {
 }
 
 func (a *authentication) allowed(subject string) ([]string, error) {
-	catalogs, err := allowedCatalogs(a.cfg.PolicyFile, subject)
+	catalogs, err := allowedCatalogs(a.cfg.PolicyFile, subject, false)
 	if err != nil {
 		return nil, err
 	}

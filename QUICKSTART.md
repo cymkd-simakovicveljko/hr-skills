@@ -4,6 +4,23 @@ Connect once, then let your agent load the relevant engineering skills as needed
 
 **For:** developers with OMP installed, using its default profile and a Bash terminal. This guide connects to the **development/staging service**, not a declared production endpoint. For named profiles or other clients, see [configuration notes](README.md#client-configuration-notes).
 
+## Temporary public access
+
+The hosted staging service currently allows anonymous MCP access; no Google login or token is needed. Merge this entry into your OMP `mcpServers` configuration, preserving other servers:
+
+```json
+{
+  "hr-skills": {
+    "type": "http",
+    "url": "https://hr-skills.34.205.105.168.sslip.io/mcp"
+  }
+}
+```
+
+Omit the `headers` field, including any old `Authorization` command that reads a token file. Then continue with **3. Enable the company workflow** and **4. Restart and verify** below. Existing tokens remain valid for use after authentication is restored.
+
+This access is temporary but has no automatic expiry. The service owner restores SSO with `auth.temporarily_public: false` and a service restart; see [operator instructions](README.md#temporary-public-access). The personal-token setup below applies when authentication is enabled.
+
 ## 1. Get your personal token
 
 Open the [account page](https://hr-skills.34.205.105.168.sslip.io/) and sign in with your `recombo.ai` Google account.

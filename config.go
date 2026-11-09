@@ -13,6 +13,7 @@ import (
 )
 
 type authConfig struct {
+	TemporarilyPublic      bool   `json:"temporarily_public"`
 	ResourceURL            string `json:"resource_url"`
 	WorkspaceDomain        string `json:"workspace_domain"`
 	GoogleClientID         string `json:"google_client_id"`
@@ -155,7 +156,7 @@ func validateEndpoint(raw string) error {
 	return fmt.Errorf("HTTPS is required except on loopback")
 }
 
-func allowedCatalogs(path, subject string) ([]string, error) {
+func allowedCatalogs(path, subject string, allowAnonymous bool) ([]string, error) {
 	var p policy
 	if err := decodeFile(path, &p); err != nil {
 		return nil, err
@@ -172,7 +173,7 @@ func allowedCatalogs(path, subject string) ([]string, error) {
 			return nil, fmt.Errorf("invalid catalog in policy")
 		}
 		for _, group := range readers {
-			if subject != "" && (group == "*" || groups[group]) {
+			if (group == "*" && (subject != "" || allowAnonymous)) || (subject != "" && groups[group]) {
 				allowed = append(allowed, catalog)
 				break
 			}

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -534,5 +535,112 @@ func TestHTTPIsolationPublicationAndRevocation(t *testing.T) {
 				t.Fatalf("revoked token remained valid: %d", status)
 			}
 		})
+	}
+}
+
+func TestTemporaryPublicAccess(t *testing.T) {
+	root := t.TempDir()
+	c := config{Store: filepath.Join(root, "store"), PolicyFile: filepath.Join(root, "policy.json")}
+	for _, name := range []string{"engineering", "finance"} {
+		source := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Join(source, "demo"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		body := "---\nname: demo\ndescription: Example skill\n---\n" + name
+		if err := os.WriteFile(filepath.Join(source, "demo", "SKILL.md"), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		c.Catalogs = append(c.Catalogs, catalogConfig{Name: name, Path: source})
+	}
+	if _, err := publishCatalogs(c); err != nil {
+		t.Fatal(err)
+	}
+	// Even an empty-subject grant must not expose a restricted catalog.
+	policyData := []byte(`{"subjects":{"":["finance"]},"catalogs":{"engineering":["*"],"finance":["finance"]}}`)
+	if err := os.WriteFile(c.PolicyFile, policyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	tokens, err := newTokenStore(filepath.Join(root, "tokens.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	uris := map[string]string{}
+	for _, catalog := range []string{"engineering", "finance"} {
+		entries, err := (&catalogStore{root: c.Store}).list([]string{catalog})
+		if err != nil {
+			t.Fatal(err)
+		}
+		uris[catalog] = entries[0].URI
+	}
+	for _, public := range []bool{false, true, false} {
+		// Decode the operator-facing switch so the test also covers restoration.
+		if err := json.Unmarshal([]byte(`{"auth":{"temporarily_public":`+fmt.Sprint(public)+`}}`), &c); err != nil {
+			t.Fatal(err)
+		}
+		server := httptest.NewUnstartedServer(nil)
+		c.Auth.ResourceURL = "http://" + server.Listener.Addr().String() + "/mcp"
+		handler, err := newHTTPHandler(c, tokens.verify, http.NotFoundHandler())
+		if err != nil {
+			t.Fatal(err)
+		}
+		server.Config.Handler = handler
+		server.Start()
+		t.Cleanup(server.Close)
+		call := func(method string, params any) map[string]json.RawMessage {
+			t.Helper()
+			body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, err := http.NewRequest("POST", server.URL+"/mcp", bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			req.Header.Set("MCP-Protocol-Version", "2025-11-25")
+			resp, err := server.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if !public {
+				if resp.StatusCode != http.StatusUnauthorized {
+					t.Fatalf("authentication restored: status=%d", resp.StatusCode)
+				}
+				return nil
+			}
+			data, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result map[string]json.RawMessage
+			if resp.StatusCode != http.StatusOK || json.Unmarshal(data, &result) != nil {
+				t.Fatalf("public request: status=%d body=%s", resp.StatusCode, data)
+			}
+			return result
+		}
+		result := call("tools/call", map[string]any{"name": "list_skills", "arguments": map[string]any{}})
+		if !public {
+			continue
+		}
+		if result["error"] != nil || !bytes.Contains(result["result"], []byte(uris["engineering"])) || bytes.Contains(result["result"], []byte(uris["finance"])) {
+			t.Fatalf("public catalog isolation: %s", result)
+		}
+		for _, catalog := range []string{"engineering", "finance"} {
+			result = call("resources/read", map[string]any{"uri": uris[catalog]})
+			if catalog == "engineering" && (result["error"] != nil || !bytes.Contains(result["result"], []byte("engineering"))) {
+				t.Fatalf("public read: %s", result)
+			}
+			if catalog == "finance" && result["error"] == nil {
+				t.Fatalf("restricted catalog exposed: %s", result)
+			}
+		}
+		if err := os.WriteFile(c.PolicyFile, []byte(`{"catalogs":{"engineering":["private"]}}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if result = call("resources/read", map[string]any{"uri": uris["engineering"]}); result["error"] == nil {
+			t.Fatalf("public access survived policy removal: %s", result)
+		}
 	}
 }

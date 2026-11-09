@@ -14,6 +14,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/auth"
 )
 
 const usage = `Usage: hr-skills <publish|serve> -config config.json
@@ -43,6 +45,10 @@ Authentication:
   OAuth is not provided. Tokens remain valid until rotated or revoked; only their
   SHA-256 digests are persisted. Rotation replaces that user's previous token.
   Browser sessions expire independently and are cleared on server restart.
+  For temporary anonymous reads, set auth.temporarily_public to true and restart.
+  Only catalogs with reader "*" are exposed. Google login and token management
+  are unavailable in this mode; existing tokens are preserved. Set false and
+  restart to restore authentication. Public access does not expire automatically.
 
 Policy subjects are verified Google sub values, shown on the signed-in account
 page, not emails or Google group names. Memberships are admin-managed; no Google
@@ -104,7 +110,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) error {
 		}
 		return json.NewEncoder(out).Encode(revisions)
 	}
-	if _, err := allowedCatalogs(c.PolicyFile, ""); err != nil {
+	if _, err := allowedCatalogs(c.PolicyFile, "", c.Auth.TemporarilyPublic); err != nil {
 		return fmt.Errorf("policy: %w", err)
 	}
 	catalogNames := make([]string, 0, len(c.Catalogs))
@@ -114,11 +120,18 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	if _, err := (&catalogStore{root: c.Store}).list(catalogNames); err != nil {
 		return fmt.Errorf("publish catalogs before serving: %w", err)
 	}
-	account, err := newAuthentication(ctx, c)
-	if err != nil {
-		return fmt.Errorf("authentication: %w", err)
+	var verifier auth.TokenVerifier
+	var accountHandler http.Handler = http.NotFoundHandler()
+	if c.Auth.TemporarilyPublic {
+		slog.Warn("temporary public access enabled", "resource", c.Auth.ResourceURL)
+	} else {
+		account, err := newAuthentication(ctx, c)
+		if err != nil {
+			return fmt.Errorf("authentication: %w", err)
+		}
+		verifier, accountHandler = account.tokens.verify, account.handler()
 	}
-	handler, err := newHTTPHandler(c, account.tokens.verify, account.handler())
+	handler, err := newHTTPHandler(c, verifier, accountHandler)
 	if err != nil {
 		return err
 	}

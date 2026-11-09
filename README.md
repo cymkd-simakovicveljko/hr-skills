@@ -8,6 +8,8 @@ The server distributes content; it does not execute scripts, install local skill
 
 Start with [Connect OMP to the company workflow](QUICKSTART.md): get a personal token, connect MCP, enable the workflow bootstrap, and verify it in a fresh session. The guide targets the development/staging service and requires no local server or catalog checkout.
 
+The hosted staging service temporarily permits anonymous access. Use the no-header configuration in the [quick start](QUICKSTART.md#temporary-public-access); personal-token setup applies after authentication is restored.
+
 ### Client configuration notes
 
 The quick start uses OMP's default user profile. Named profiles use `~/.omp/profiles/<name>/agent/mcp.json` instead; use a matching private secret location if you want separate local credential storage. A project-level definition or disable override can supersede the user entry.
@@ -90,6 +92,14 @@ Every file beneath a skill directory is distributed, including nested skills and
 
 Run one publisher per catalog store and one server per token file. The publisher needs write access to the store. The runtime reads the store, policy, and Google client secret, and writes its token file; it does not need Git credentials.
 
+### Temporary public access
+
+Set `auth.temporarily_public` to `true` in the server configuration and restart `serve` to allow anonymous MCP reads. The default is `false`. This deliberately exposes every catalog whose policy includes reader `"*"` to anyone with the URL; group-restricted catalogs remain inaccessible, even when a client sends an existing bearer token. Policy changes still apply on every request.
+
+Public mode skips Google discovery, login, and token management. It does not read or modify the token file, and existing tokens are preserved. Keep the normal authentication configuration and credentials in place for restoration. HTTPS, Host and Origin checks, request limits, and private/no-store responses remain enforced.
+
+**There is no automatic expiry.** To restore authentication, set `auth.temporarily_public` to `false` (or remove it) and restart the service. On Lightsail, edit `/etc/hr-skills/config.json`, then run `sudo systemctl restart hr-skills.service`. An unauthenticated MCP request must return `401` afterward; clients must resume sending their personal bearer tokens. Content already downloaded while public cannot be recalled.
+
 ### Hosted catalog automation
 
 The Lightsail deployment pulls the private [hr-skills-catalog](https://github.com/cymkd-simakovicveljko/hr-skills-catalog) repository's `main` branch approximately every 15 minutes, with an initial check one minute after boot. [deploy/publish-catalog.sh](deploy/publish-catalog.sh) fetches and checks out the latest observed commit without running repository hooks, then publishes it. It records the commit only after successful publication; unchanged commits are skipped and failures are retried by the next timer run.
@@ -132,7 +142,7 @@ The example configuration calls its catalog `shared`. A reader of `"*"` grants t
 }
 ```
 
-Catalog keys must match your configuration. The hosted staging service uses `"engineering": ["*"]` and the workspace domain `recombo.ai`. This does not permit anonymous access: Google verification is still required to issue a personal token, and MCP requests still require a valid token.
+Catalog keys must match your configuration. The hosted staging service uses `"engineering": ["*"]` and the workspace domain `recombo.ai`. With the default `auth.temporarily_public: false`, Google verification is required to issue a personal token, and MCP requests require a valid token. With temporary public access enabled, `"*"` catalogs are readable without either.
 
 For a restricted catalog, replace `"*"` with group names and assign those groups in `subjects`, keyed by verified Google subject rather than email. Google Workspace group synchronization is not provided. Replace policy files atomically. Policy is reread for every MCP request, including old revisions, and invalid policy fails closed.
 

@@ -3,6 +3,7 @@
   "store": "./data",
   "policy_file": "./policy.json",
   "auth": {
+    "temporarily_public": false,
     "resource_url": "https://hr-skills.example.com/mcp",
     "workspace_domain": "recombo.ai",
     "google_client_id": "your-client-id.apps.googleusercontent.com",

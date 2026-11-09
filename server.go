@@ -81,11 +81,15 @@ func newMCPServer(c config) (*mcp.Server, error) {
 	// No session or pinned revision is an authorization cache.
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-			extra := req.GetExtra()
-			if extra == nil || extra.TokenInfo == nil || extra.TokenInfo.UserID == "" {
-				return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidRequest, Message: "authentication required"}
+			subject := ""
+			if !c.Auth.TemporarilyPublic {
+				extra := req.GetExtra()
+				if extra == nil || extra.TokenInfo == nil || extra.TokenInfo.UserID == "" {
+					return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidRequest, Message: "authentication required"}
+				}
+				subject = extra.TokenInfo.UserID
 			}
-			allowed, err := allowedCatalogs(c.PolicyFile, extra.TokenInfo.UserID)
+			allowed, err := allowedCatalogs(c.PolicyFile, subject, c.Auth.TemporarilyPublic)
 			if err != nil {
 				return nil, catalogError(err)
 			}
@@ -238,9 +242,21 @@ func newHTTPHandler(c config, verifier auth.TokenVerifier, accountHandler http.H
 		// Exact public Host is checked below, including requests from a local TLS proxy.
 		DisableLocalhostProtection: true, PropagateRequestCancellation: true,
 	})
-	protected := auth.RequireBearerToken(verifier, &auth.RequireBearerTokenOptions{
-		Scopes: []string{readScope}, AllowMissingExpiration: true,
-	})(transport)
+	var protected http.Handler = transport
+	if !c.Auth.TemporarilyPublic {
+		protected = auth.RequireBearerToken(verifier, &auth.RequireBearerTokenOptions{
+			Scopes: []string{readScope}, AllowMissingExpiration: true,
+		})(transport)
+	} else {
+		accountHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("Temporary public access is enabled. Connect your MCP client to /mcp without authentication. Google login and token management are temporarily unavailable.\n"))
+		})
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/", accountHandler)
 	mux.Handle("/mcp", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
